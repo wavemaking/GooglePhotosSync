@@ -13,7 +13,7 @@ TODO:
     -Cleanup counters    
     -Also implement looping over the database (delete records for which no files exist on either end)
     -Split out entry points:
-        -Full scan (automatically done when db is not available or when no arguments are supplied)
+        -Full scan (automatically done when db is not available or when no arguments are supplied) - ccurently the only one implemented
         -Only poll most recent updates on google
         -Sync local files based on inotify updates or similar
 """
@@ -25,6 +25,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from model import Pairs, Base
 import logging
+import datetime
 import sys
 import logging.handlers
 import os
@@ -40,7 +41,7 @@ if __name__ == '__main__':
 
     config = {}
     
-    execfile('settings.conf',config)
+    execfile(os.path.join(os.path.dirname(__file__),'settings.conf'),config)
                             
     REMOTE_ACCOUNTS     = config['REMOTE_ACCOUNTS'] + config['REMOTE_ACCOUNTS'][0:len(config['REMOTE_ACCOUNTS'])-1] # Ensures that changes from the last accounts are also propageted to the first accounts during the same run
 
@@ -68,7 +69,7 @@ if __name__ == '__main__':
         
     logger              = logging.getLogger(__name__)
     
-    #Initially counters
+    #Initialise counters
     deleted_on_google   = {}
     deleted_locally     = {}
     new_on_google       = {}
@@ -143,7 +144,7 @@ if __name__ == '__main__':
             photos.entry.reverse()            
             for iphoto, photo in enumerate(photos.entry): #loop through Google photos        
                                             
-                google_timestamp= float(photo.timestamp.datetime().strftime('%s'))
+                google_timestamp= (photo.timestamp.datetime() - datetime.datetime(1970,1,1)).total_seconds()
                 google_fn       = photo.title.text
                 no_files_on_google[remote_account['email']][album] += 1
                 
