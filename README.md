@@ -11,10 +11,10 @@ If pyexiv2 is installed, then individual photo's will also be tagged according t
 # Install and configure
 
 Install Python (2.7) and the following packages:
--gdata (tested with version 2.0.18)
--sqlalchemy (tested with version 0.8.4)
--python-sqlite (tested with version 1.0.1)
--pyexiv2 (optional; tested with version 0.3.2)
+-   gdata (tested with version 2.0.18)
+-   sqlalchemy (tested with version 0.8.4)
+-   python-sqlite (tested with version 1.0.1)
+-   pyexiv2 (optional; tested with version 0.3.2)
 
 Clone this repository.
 
