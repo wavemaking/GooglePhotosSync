@@ -13,12 +13,13 @@ TODO:
     -Cleanup counters    
     -Also implement looping over the database (delete records for which no files exist on either end)
     -Split out entry points:
-        -Full scan (automatically done when db is not available or when no arguments are supplied) - ccurently the only one implemented
+        -Full scan (automatically done when db is not available or when no arguments are supplied) - curently the only one implemented
         -Only poll most recent updates on google
         -Sync local files based on inotify updates or similar
 """
 
 import gdata.photos.service
+import gd_client_oauth
 import gdata.media
 import gdata.geo
 from sqlalchemy import create_engine
@@ -30,6 +31,9 @@ import sys
 import logging.handlers
 import os
 from operations import *
+from inspect import getsourcefile
+
+os.chdir(os.path.dirname(getsourcefile(lambda:0)))
 
 # Hack because python gdata client by default does not accept videos
 for mtype in valid_mimetypes:
@@ -40,8 +44,8 @@ for mtype in valid_mimetypes:
 if __name__ == '__main__':
 
     config = {}
-    
-    execfile(os.path.join(os.path.dirname(__file__),'settings.conf'),config)
+            
+    execfile(os.path.join(os.path.dirname(__file__),'settings.py'),config)
                             
     REMOTE_ACCOUNTS     = config['REMOTE_ACCOUNTS'] + config['REMOTE_ACCOUNTS'][0:len(config['REMOTE_ACCOUNTS'])-1] # Ensures that changes from the last accounts are also propageted to the first accounts during the same run
 
@@ -111,22 +115,26 @@ if __name__ == '__main__':
         Session     = sessionmaker(bind=engine)
         session     = Session()
         Base.metadata.create_all(engine)                   
-        
-        gd_client               = gdata.photos.service.PhotosService()
-        gd_client.email         = remote_account['email']
-        gd_client.password      = remote_account['password']
-        gd_client.source        = 'GooglePhotoSync'
-        gd_client.ProgrammaticLogin()
-        trailing_text           = remote_account['trailing_text'] #TODO: Force that this is only one letter and nothing else
+#        
+#        gd_client               = gdata.photos.service.PhotosService()
+#        gd_client.email         = remote_account['email']
+#        gd_client.password      = remote_account['password']
+#        gd_client.source        = 'GooglePhotoSync'
+#        gd_client.ProgrammaticLogin()
+                
+        trailing_text   = remote_account['trailing_text'] #TODO: Force that this is only one letter and nothing else
         
         for album in config['ALBUMS']:
+            
+            gd_client           = gd_client_oauth.OAuth2Login(config['CLIENT_SECRET'], 'cred_store' + remote_account['email'], remote_account['email'])
+            token_refresh_time  = datetime.datetime.now()
             
             logger.info('Now starting to sync album: ' + album)                        
             
             """
             Scan media on google
             Note: It is important to do google first, because:
-                  Duplication of fileswith identical names on Google can happen, while locally files will simply be overwritten.
+                  Duplication of files with identical names on Google can happen, while locally files will simply be overwritten.
                   This is relevant for the first run.
             """
             logger.info('Checking google')
@@ -142,56 +150,67 @@ if __name__ == '__main__':
                     raise
             
             photos.entry.reverse()            
-            for iphoto, photo in enumerate(photos.entry): #loop through Google photos        
-                                            
-                google_timestamp= (photo.timestamp.datetime() - datetime.datetime(1970,1,1)).total_seconds()
-                google_fn       = photo.title.text
-                no_files_on_google[remote_account['email']][album] += 1
+            for iphoto, photo in enumerate(photos.entry[::-1]): #loop through Google photos   
+            
+                if (datetime.datetime.now() - token_refresh_time).seconds > 600:
+                    gd_client           = gd_client_oauth.OAuth2Login(config['CLIENT_SECRET'], 'cred_store' + remote_account['email'], remote_account['email'])
+                    token_refresh_time  = datetime.datetime.now()
                 
-                pair            = session.query(Pairs).filter_by(album=album,google_fn=google_fn)                                                                                      
-                
-                if pair.count() > 1:
-                    logger.exception('{:d} - {}: Got back multiple records. Should be only one! Deleting latter record!!'.format(iphoto+1,pair.first().google_fn))
-                    duplicate_records_on_google[remote_account['email']][album]['no']    += 1
-                    duplicate_records_on_google[remote_account['email']][album]['pairs'].append(pair)
-                    session.delete(pair[-1])                    
-                    pair                    = pair.first()            
-                    change_str              = sync_file(pair,gd_client,iphoto)
-                    pair                    = update_db_2(pair,photo)                     
-
-                    session.commit()
-                    if 'update' in change_str:
-                        locals()[change_str][remote_account['email']][album]['no']   += 1
-                        locals()[change_str][remote_account['email']][album]['pairs'].append(pair)
-                
-                elif pair.count() == 1:
+                try:
                     
-                    pair                = pair.first()            
-                    change_str          = sync_file(pair,gd_client,iphoto)
-                    pair                = update_db_2(pair,photo)
-                    if 'update' in change_str:
-                        locals()[change_str][remote_account['email']][album]['no']   += 1
-                        locals()[change_str][remote_account['email']][album]['pairs'].append(pair)
-                    session.commit()
+                    google_timestamp= (photo.timestamp.datetime() - datetime.datetime(1970,1,1)).total_seconds()
+                    google_fn       = photo.title.text
+                                                            
+                    pair            = session.query(Pairs).filter_by(album=album,google_fn=google_fn)                                                                                      
                     
-                elif pair.count() == 0:
+                    if pair.count() > 1:
+                        
+                        logger.exception('{:d} - {}: Got back multiple records. Should be only one! Deleting latter record!!'.format(iphoto+1,pair.first().google_fn))
+                        duplicate_records_on_google[remote_account['email']][album]['no']    += 1
+                        duplicate_records_on_google[remote_account['email']][album]['pairs'].append(pair)
+                        session.delete(pair[-1])                    
+                        pair                    = pair.first()            
+                        change_str              = sync_file(pair,gd_client,iphoto)
+                        pair                    = update_db_2(pair,photo)                     
+    
+                        session.commit()
+                        if 'update' in change_str:
+                            locals()[change_str][remote_account['email']][album]['no']   += 1
+                            locals()[change_str][remote_account['email']][album]['pairs'].append(pair)
                     
-                    logger.info('{:d} - {}: New media not yet available locally'.format(iphoto+1,google_fn))
+                    elif pair.count() == 1:
+                        
+                        pair                = pair.first()            
+                        change_str          = sync_file(pair,gd_client,iphoto)
+                        pair                = update_db_2(pair,photo)
+                        if 'update' in change_str:
+                            locals()[change_str][remote_account['email']][album]['no']   += 1
+                            locals()[change_str][remote_account['email']][album]['pairs'].append(pair)
+                        session.commit()
+                        
+                    elif pair.count() == 0:
+                        
+                        logger.info('{} {:d} - {}: New media not yet available locally'.format(album,iphoto+1,google_fn))
+                        
+                        pair                = Pairs()        
+                        pair,photo          = update_db_1_2local(pair,gd_client,photo,config['BASEPATH_LOCAL'],album,trailing_text)        
+                        photo,pair          = apply_keyword_google(gd_client,photo,pair)
+                        copy2local(pair)
+                        pair                = apply_keyword_local(pair)
+                        pair                = update_db_2(pair,photo)
+                        session.add(pair)
+                        new_on_google[remote_account['email']][album]['no']    += 1
+                        new_on_google[remote_account['email']][album]['pairs'].append(pair)
+                        session.commit()      
+                        
+                    else:
+                        logger.exception('Unrealistic number of records')
+                        #raise ValueError #TODO: Could be more specific      
+                        
+                    no_files_on_google[remote_account['email']][album] += 1
                     
-                    pair                = Pairs()        
-                    pair,photo          = update_db_1_2local(pair,gd_client,photo,config['BASEPATH_LOCAL'],album,trailing_text)        
-                    photo,pair          = apply_keyword_google(gd_client,photo,pair)
-                    copy2local(pair)
-                    pair                = apply_keyword_local(pair)
-                    pair                = update_db_2(pair,photo)
-                    session.add(pair)
-                    new_on_google[remote_account['email']][album]['no']    += 1
-                    new_on_google[remote_account['email']][album]['pairs'].append(pair)
-                    session.commit()      
-                    
-                else:
-                    logger.exception('Unrealistic number of records')
-                    raise ValueError #TODO: Could be more specific                     
+                except:
+                    logger.exception('{:d} - {}: Could not handle this photo locally in album {}'.format(iphoto+1,pair.local_fn,album))    
             
             
             """
@@ -199,65 +218,82 @@ if __name__ == '__main__':
             """
             logger.info('Checking locally')
                                     
-            local_path  = os.path.join(config['BASEPATH_LOCAL'],album)
+            local_path          = os.path.join(config['BASEPATH_LOCAL'],album)
             make_sure_path_exists(local_path)  
-            photos      = [f for f in os.listdir(local_path) if os.path.isfile(os.path.join(local_path,f))]
+            photos              = [f for f in os.listdir(local_path) if (os.path.isfile(os.path.join(local_path,f)) and os.stat(os.path.join(local_path,f)).st_size != 0)]
             
-            for iphoto, photo in enumerate(photos):
-                
-                no_files_locally[remote_account['email']][album] += 1
-                
-                local_fn        = photo  
-                local_mtime     = os.path.getmtime(os.path.join(local_path, local_fn))
+            gd_client           = gd_client_oauth.OAuth2Login(config['CLIENT_SECRET'], 'cred_store' + remote_account['email'], remote_account['email'])
+            token_refresh_time  = datetime.datetime.now()
+            
+            for iphoto, photo in enumerate(photos[::-1]):
+                                                
+                if (datetime.datetime.now() - token_refresh_time).seconds > 60:
+                    gd_client           = gd_client_oauth.OAuth2Login(config['CLIENT_SECRET'], 'cred_store' + remote_account['email'], remote_account['email'])
+                    token_refresh_time  = datetime.datetime.now()            
+
+                try:
+                                
+                    local_fn        = photo  
+                    local_mtime     = os.path.getmtime(os.path.join(local_path, local_fn))
+                            
+                    pair            = session.query(Pairs).filter_by(album=album,local_fn=local_fn)
+                    
+                    if pair.count() > 1:                    
+                        logger.exception('{:d} - {}: Got back multiple records. Should be only one! Deleting latter record!!'.format(iphoto+1,pair[-1].local_fn))
+                        session.delete(pair[-1])
+                        duplicate_records_locally[remote_account['email']][album]['no']    += 1
+                        duplicate_records_locally[remote_account['email']][album]['pairs'].append(pair)
+                        pair                = pair.first()
+                        change_str          = sync_file(pair,gd_client,iphoto)
+                        photo           = get_photo_google(pair,gd_client)                        
+                        pair                = update_db_2(pair,photo)
+                        if 'update' in change_str:
+                            locals()[change_str][remote_account['email']][album]['no']   += 1
+                            locals()[change_str][remote_account['email']][album]['pairs'].append(pair)
+                        session.commit()
                         
-                pair            = session.query(Pairs).filter_by(album=album,local_fn=local_fn)
-                
-                if pair.count() > 1:                    
-                    logger.exception('{:d} - {}: Got back multiple records. Should be only one! Deleting latter record!!'.format(iphoto+1,pair.local_fn))
-                    session.delete(pair[-1])
-                    duplicate_records_locally[remote_account['email']][album]['no']    += 1
-                    duplicate_records_locally[remote_account['email']][album]['pairs'].append(pair)
-                    pair                = pair.first()            
-                    change_str          = sync_file(pair,gd_client,iphoto)
-                    pair                = update_db_2(pair,photo)
-                    if 'update' in change_str:
-                        locals()[change_str][remote_account['email']][album]['no']   += 1
-                        locals()[change_str][remote_account['email']][album]['pairs'].append(pair)
-                    session.commit()
-                    
-                elif pair.count() == 1:
-                                            
-                    pair                = pair.first()            
-                    sync_file(pair,gd_client,iphoto)                    
-                    photo_g             = get_photo_google(pair,gd_client)
-                    if photo_g is None:
-                        logger.warning('{:d} - {}: Photo not available anymore on google in album {}'.format(iphoto+1,pair.local_fn,album))
-                        pair.google_fn  = 'missing'                        
-                    else:
-                        pair            = update_db_2(pair,photo_g)     
-                    if 'update' in change_str:
-                        locals()[change_str][remote_account['email']][album]['no']   += 1
-                        locals()[change_str][remote_account['email']][album]['pairs'].append(pair)
-                    session.commit()                
-                    
-                elif pair.count() == 0:
-                    
-                    logger.info('{:d} - {}: New media not yet available on google'.format(iphoto+1,local_fn))
-                    
-                    pair        = Pairs()                            
-                    pair        = update_db_1_2google(pair,config['BASEPATH_LOCAL'],album,local_fn,trailing_text)
-                    pair        = apply_keyword_local(pair)
-                    photo       = copy2google(pair,gd_client)
-                    photo,pair  = apply_keyword_google(gd_client,photo,pair)            
-                    pair        = update_db_2(pair,photo)
-                    session.add(pair)
-                    new_locally[remote_account['email']][album]['no']    += 1
-                    new_locally[remote_account['email']][album]['pairs'].append(pair)
-                    session.commit()
-                    
-                else:                
-                    logger.exception('Unrealistic number of records')
-                    raise ValueError #TODO: Could be more specific  
+                    elif pair.count() == 1:
+                                                
+                        pair                = pair.first()            
+                        sync_file(pair,gd_client,iphoto)
+                        try:
+                            photo_g         = get_photo_google(pair,gd_client)
+                        except:
+                            gd_client       = gd_client_oauth.OAuth2Login(config['CLIENT_SECRET'], 'cred_store' + remote_account['email'], remote_account['email'])
+                            photo_g         = get_photo_google(pair,gd_client)
+                        if photo_g is None:
+                            logger.warning('{:d} - {}: Photo not available anymore on google in album {}'.format(iphoto+1,pair.local_fn,album))
+                            pair.google_fn  = 'missing'                        
+                        else:
+                            pair            = update_db_2(pair,photo_g)     
+                        if 'update' in change_str:
+                            locals()[change_str][remote_account['email']][album]['no']   += 1
+                            locals()[change_str][remote_account['email']][album]['pairs'].append(pair)
+                        session.commit()                
+                        
+                    elif pair.count() == 0:
+                        
+                        logger.info('{:d} - {}: New media not yet available on google'.format(iphoto+1,local_fn))
+                        
+                        pair        = Pairs()                            
+                        pair        = update_db_1_2google(pair,config['BASEPATH_LOCAL'],album,local_fn,trailing_text)
+                        pair        = apply_keyword_local(pair)
+                        photo       = copy2google(pair,gd_client)
+                        photo,pair  = apply_keyword_google(gd_client,photo,pair)            
+                        pair        = update_db_2(pair,photo)
+                        session.add(pair)
+                        new_locally[remote_account['email']][album]['no']    += 1
+                        new_locally[remote_account['email']][album]['pairs'].append(pair)
+                        session.commit()
+                        
+                    else:                
+                        logger.exception('Unrealistic number of records')
+                        #raise ValueError #TODO: Could be more specific  
+                        
+                        no_files_locally[remote_account['email']][album] += 1
+                        
+                except:
+                        logger.exception('{:d} - {}: Could not handle this photo on google in album {}'.format(iphoto+1,pair.local_fn,album))                    
                                         
                     
     for remote_acount in REMOTE_ACCOUNTS:

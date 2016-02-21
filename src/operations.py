@@ -109,8 +109,6 @@ def get_photo_google(pair,gd_client):
     for entry in photos.entry:
         if entry.title.text == pair.google_fn:
             photo = entry            
-    if photo is None:
-        return None
     return photo
 
 def update_db_1_2local(pair,gd_client,photo_google,BASEPATH_LOCAL,album,trailing_text): #before copying
@@ -161,12 +159,19 @@ def update_db_2(pair,photo): #Document state after copying
     else:
         pass
     
-    pair.google_timestamp   = float(photo.timestamp.datetime().strftime('%s'))
-    pair.google_url         = photo.GetMediaURL()
-    pair.google_url         = pair.google_url.rsplit('/',1)[0] + '/s0-d/' + pair.google_url.rsplit('/',1)[1]
-    pair.google_fn          = photo.title.text        
-    pair.google_size        = photo.size.text    
-    pair.google_photoid     = photo.gphoto_id.text
+    if photo == None:
+        pair.google_timestamp   = 0
+        pair.google_url         = ''        
+        pair.google_fn          = 'missing'
+        pair.google_size        = 0
+        pair.google_photoid     = 0
+    else:
+        pair.google_timestamp   = float(photo.timestamp.datetime().strftime('%s'))    
+        pair.google_url         = photo.GetMediaURL()
+        pair.google_url         = pair.google_url.rsplit('/',1)[0] + '/s0-d/' + pair.google_url.rsplit('/',1)[1]
+        pair.google_fn          = photo.title.text        
+        pair.google_size        = photo.size.text    
+        pair.google_photoid     = photo.gphoto_id.text
     
     return pair
 
@@ -186,8 +191,8 @@ def copy2google(pair,gd_client):
     mimetype            = mimetypes.guess_type(local_full_path, strict=True)[0]
     photoentry          = gdata.photos.PhotoEntry()
     photoentry.title    = atom.Title(text=pair.local_fn)
-    photoentry.summary  = atom.Summary(text='',summary_type='text')
-    photo               = gd_client.InsertPhoto(album_url,photoentry,local_full_path,mimetype) 
+    photoentry.summary  = atom.Summary(text='',summary_type='text')    
+    photo               = gd_client.InsertPhoto(album_url,photoentry,local_full_path,mimetype)     
 
     return photo
     
@@ -211,7 +216,7 @@ def update2google(pair,gd_client):
     copy2google(pair,gd_client)
 
 def update2local(pair,gd_client):
-    deletelocal(pair,gd_client)
+    deletelocal(pair)
     copy2local(pair,gd_client)
     
 def sync_file(pair,gd_client,iphoto):
@@ -227,26 +232,26 @@ def sync_file(pair,gd_client,iphoto):
         google_timestamp    = float(photo.timestamp.datetime().strftime('%s'))
         
         if local_mtime == pair.local_mtime and google_timestamp == pair.google_timestamp:
-            logger.info('{:d} - {}: Both sides unchanged'.format(iphoto+1,pair.local_fn))
+            logger.info('{} - {:d} - {}: Both sides unchanged'.format(pair.album,iphoto+1,pair.local_fn))
                 
         if local_mtime == pair.local_mtime and google_timestamp != pair.google_timestamp:
-            logger.info('{:d} - {}: google changed'.format(iphoto+1,pair.local_fn))                
+            logger.info('{} - {:d} - {}: google changed'.format(pair.album,iphoto+1,pair.local_fn))                
             update2local(pair,gd_client)
             change_str  = 'updated_on_google'
             
         if local_mtime != pair.local_mtime and google_timestamp == pair.google_timestamp:
-            logger.info('{:d} - {}: Local changed'.format(iphoto+1,pair.local_fn))
+            logger.info('{}-  {:d} - {}: Local changed'.format(pair.album,iphoto+1,pair.local_fn))
             update2google(pair,gd_client)
             change_str  = 'updated_locally'
             
         if local_mtime != pair.local_mtime and google_timestamp != pair.google_timestamp:
-            logger.info('{:d} - {}: Both sides changed'.format(iphoto+1,pair.local_fn))
-            logger.info('{:d} - {}: google is preferred'.format(iphoto+1,pair.local_fn))
+            logger.info('{} - {:d} - {}: Both sides changed'.format(pair.album,iphoto+1,pair.local_fn))
+            logger.info('{} - {:d} - {}: google is preferred'.format(pair.album,iphoto+1,pair.local_fn))
             update2local(pair,gd_client)
             change_str  = 'updated_on_google'
     
     except:
-        logger.error('{:d} - {}: Uncaught error. Probably one side got deleted?'.format(iphoto+1,pair.local_fn))
+        logger.error('{} - {:d} - {}: Uncaught error. Probably one side got deleted?'.format(pair.album,iphoto+1,pair.local_fn))
         #TODO: Also handle deletion !    
         
     return change_str
